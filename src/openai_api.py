@@ -34,13 +34,13 @@ from ai import AIEngine
 from codec import get_codecs, CODECS, UnsupportedCodec
 from config import Config
 
-OPENAI_API_MODEL = "gpt-4o-realtime-preview-2024-10-01"
+OPENAI_API_MODEL = "gpt-4o-realtime-preview-2024-12-17"
 OPENAI_URL_FORMAT = "wss://api.openai.com/v1/realtime?model={}"
 
 
 class OpenAI(AIEngine):  # pylint: disable=too-many-instance-attributes
 
-    """ Implements WS communication with OpenAI """
+    logging.info(" OPENAI_API -> Implements WS communication with OpenAI ")
 
     def __init__(self, call, cfg):
         self.codec = self.choose_codec(call.sdp)
@@ -71,7 +71,7 @@ class OpenAI(AIEngine):  # pylint: disable=too-many-instance-attributes
             self.codec_name = "g711_alaw"
 
     def choose_codec(self, sdp):
-        """ Returns the preferred codec from a list """
+        logging.info(" OPENAI_API -> Returns the preferred codec from a list ")
         codecs = get_codecs(sdp)
         priority = ["pcma", "pcmu"]
         cmap = {c.name.lower(): c for c in codecs}
@@ -82,20 +82,47 @@ class OpenAI(AIEngine):  # pylint: disable=too-many-instance-attributes
         raise UnsupportedCodec("No supported codec found")
 
     def get_audio_format(self):
-        """ Returns the corresponding audio format """
+        logging.info(" OPENAI_API -> Returns the corresponding audio format ")
         return self.codec_name
+    
+    # async def start(self):
+    #     headers = {
+    #         "Authorization": f"Bearer {self.key}",
+    #         "OpenAI-Beta": "realtime=v1"
+    #     }
+    #     print("Tentando conectar")
+    #     self.ws = await connect(self.url, additional_headers=headers)
+    #     print("Conexão feita com sucesso")
 
+    
     async def start(self):
-        """ Starts OpenAI connection and logs messages """
+        logging.info(" OPENAI_API -> Starts OpenAI connection and logs messages ")
         openai_headers = {
                 "Authorization": f"Bearer {self.key}",
-                "OpenAI-Beta": "realtime=v1"
+                "OpenAI-Beta": "speech-to-speech"
         }
-        self.ws = await connect(self.url, additional_headers=openai_headers)
+        logging.info(" OPENAI_API -> conectando ao websocket ")
+        
+        headers = {
+            "Authorization": f"Bearer {self.key}",
+            "OpenAI-Beta": "realtime=v1"
+        }
+        logging.info("URL ==> " + self.url)
+        logging.info("HEADERS ==> " + json.dumps(headers))
+        self.ws = await connect(self.url, additional_headers=headers)
+        # self.ws = websocket.WebSocketApp(
+        #     self.url,
+        #     header=openai_headers,
+        #     on_open=logging.info("OPENAI_API -> conectado a openai."),
+        #     on_message=self.on_message,
+        #     on_error=self.on_error,
+        #     on_close=self.on_close
+        # )
+        logging.info(" OPENAI_API -> conectado ")
         try:
-            json.loads(await self.ws.recv())
+            json_result = json.loads(await self.ws.recv())
         except ConnectionClosedOK:
-            logging.info("WS Connection with OpenAI is closed")
+            logging.info(" OPENAI_API ->WS Connection with OpenAI is closed")
             return
         except ConnectionClosedError as e:
             logging.error(e)
@@ -162,13 +189,19 @@ class OpenAI(AIEngine):  # pylint: disable=too-many-instance-attributes
             self.session["instructions"] = self.instructions
 
         try:
-            await self.ws.send(json.dumps({"type": "session.update", "session": self.session}))
+            logging.info("OPENAI_API -> Enviando session update de início de conversação para OPENAI")
+            json_to_send = json.dumps({"type": "session.update", "session": self.session})
+            logging.info("json to send => " + json_to_send)
+            await self.ws.send(json_to_send)
             if self.intro:
                 self.intro = {
                     "instructions": "Please greet the user with the following: " +
                     self.intro
                 }
-                await self.ws.send(json.dumps({"type": "response.create", "response": self.intro}))
+                logging.info("OPENAI_API -> Entrou no self.intro")
+                self.ws.send(json.dumps({"type": "response.create", "response": self.intro}))
+            
+            logging.info("OPENAI_API -> enviado")
             await self.handle_command()
         except ConnectionClosedError as e:
             logging.error(f"Error while communicating with OpenAI: {e}. Terminating call.")
@@ -177,20 +210,27 @@ class OpenAI(AIEngine):  # pylint: disable=too-many-instance-attributes
             logging.error(f"Unexpected error during session: {e}. Terminating call.")
             self.terminate_call()
 
-
     async def handle_command(self):  # pylint: disable=too-many-branches
-        """ Handles a command from the server """
+        logging.info(" OPENAI_API -> Handles a command from the server ")
         leftovers = b''
-        async for smsg in self.ws:
+        t = ""
+        while t != "response.done":
+            logging.info(" OPENAI_API -> loop para checagem de mensagens da OPENAI ")
+            smsg = await self.ws.recv()
             msg = json.loads(smsg)
+            logging.info("OPENAI_API -> " + smsg)
             t = msg["type"]
             if t == "response.audio.delta":
+                logging.info("OPENAI_API -> response.audio.delta")
+                logging.info("OPENAI_API -> resposta delta => " + msg["delta"])
                 media = base64.b64decode(msg["delta"])
                 packets, leftovers = await self.run_in_thread(
                     self.codec.parse, media, leftovers)
                 for packet in packets:
+                    logging.info("OPENAI_API -> Enfileirando os dados")
                     self.queue.put_nowait(packet)
             elif t == "response.audio.done":
+                logging.info("OPENAI_API -> response.audio.done")
                 logging.info(t)
                 if len(leftovers) > 0:
                     packet = await self.run_in_thread(
@@ -199,13 +239,17 @@ class OpenAI(AIEngine):  # pylint: disable=too-many-instance-attributes
                     leftovers = b''
 
             elif t == "conversation.item.created":
+                logging.info("OPENAI_API -> conversation.item.created")
                 if msg["item"].get('status') == "completed":
                     self.drain_queue()
             elif t == "conversation.item.input_audio_transcription.completed":
-                logging.info("Speaker: %s", msg["transcript"].rstrip())
+                logging.info("OPENAI_API -> conversation.item.input_audio_transcription.completed")
+                logging.info(" OPENAI_API ->Speaker: %s", msg["transcript"].rstrip())
             elif t == "response.audio_transcript.done":
-                logging.info("Engine: %s", msg["transcript"])
+                logging.info("OPENAI_API -> response.audio_transcript.done")
+                logging.info(" OPENAI_API ->Engine: %s", msg["transcript"])
             elif t == "response.function_call_arguments.done":
+                logging.info("OPENAI_API -> response.function_call_arguments.done")
                 if msg["name"] == "terminate_call":
                     logging.info(t)
                     self.terminate_call()
@@ -222,30 +266,44 @@ class OpenAI(AIEngine):  # pylint: disable=too-many-instance-attributes
                     self.call.mi_conn.execute('ua_session_update', params)
 
             elif t == "error":
+                logging.info("OPENAI_API -> error")
                 logging.info(msg)
             else:
                 logging.info(t)
+                return
+        
+        logging.info(" OPENAI_API -> Passou do loop ")
+
+    def on_message(self, message):
+        logging.info("OPENAI_API -> message received")
+        asyncio.run(self.handle_command(message))
+
+    def on_error(self, error):
+        logging.info("Erro:", error)
+
+    def on_close(self, close_status_code, close_msg):
+        logging.info("🔒 Conexão encerrada.", close_status_code, close_msg)
 
     def terminate_call(self):
-        """ Terminates the call """
+        logging.info(" OPENAI_API -> Terminates the call ")
         self.call.terminated = True
 
     async def run_in_thread(self, func, *args):
-        """ Runs a function in a thread """
+        logging.info(" OPENAI_API -> Runs a function in a thread ")
         return await asyncio.to_thread(func, *args)
 
     def drain_queue(self):
-        """ Drains the playback queue """
+        logging.info(" OPENAI_API -> Drains the playback queue ")
         count = 0
         try:
             while self.queue.get_nowait():
                 count += 1
         except Empty:
             if count > 0:
-                logging.info("dropping %d packets", count)
+                logging.info(" OPENAI_API ->dropping %d packets", count)
 
     async def send(self, audio):
-        """ Sends audio to OpenAI """
+        logging.info(" OPENAI_API -> Sends audio to OpenAI ")
         if not self.ws or self.call.terminated:
             return
 

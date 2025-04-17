@@ -41,11 +41,11 @@ available_ports = set(range(min_rtp_port, max_rtp_port))
 
 
 class NoAvailablePorts(Exception):
-    """ There are no available ports """
+    logging.info("CALL -> There are no available ports ")
 
 
 class Call():  # pylint: disable=too-many-instance-attributes
-    """ Class that handles a call """
+    logging.info("CALL -> Class that handles a call ")
     # pylint: disable=too-many-arguments, too-many-positional-arguments
     def __init__(self,
                  b2b_key,
@@ -58,7 +58,7 @@ class Call():  # pylint: disable=too-many-instance-attributes
         try:
             hostname = socket.gethostbyname(socket.gethostname())
         except socket.gaierror:  # unknown hostname
-            hostname = "127.0.0.1"
+            hostname = "0.0.0.0"
         rtp_ip = rtp_cfg.get('ip', 'RTP_IP', hostname)
 
         self.b2b_key = b2b_key
@@ -79,6 +79,9 @@ class Call():  # pylint: disable=too-many-instance-attributes
         self.to = to
         self.sdp = sdp
         self.ai = get_ai(flavor, self, cfg)
+        self.flavor = flavor
+
+        logging.info("OpenAi url -> " + self.ai.url)
 
         self.codec = self.ai.get_codec()
 
@@ -88,15 +91,8 @@ class Call():  # pylint: disable=too-many-instance-attributes
 
         self.sdp = self.get_new_sdp(sdp, rtp_ip)
 
-        asyncio.create_task(self.ai.start())
-
-        self.first_packet = True
-        loop = asyncio.get_running_loop()
-        loop.add_reader(self.serversock.fileno(), self.read_rtp)
-        logging.info("handling %s using %s AI", b2b_key, flavor)
-
     def bind(self, host_ip):
-        """ Binds the call to a port """
+        logging.info("CALL -> Binds the call to a port ")
         if not available_ports:
             raise NoAvailablePorts()
         port = secrets.choice(list(available_ports))
@@ -105,11 +101,11 @@ class Call():  # pylint: disable=too-many-instance-attributes
         logging.info("Bound to %s:%d", host_ip, port)
 
     def get_body(self):
-        """ Retrieves the SDP built """
+        logging.info("CALL -> Retrieves the SDP built ")
         return str(self.sdp)
 
     def get_new_sdp(self, sdp, host_ip):
-        """ Gets a new SDP to be sent back in 200 OK """
+        logging.info("CALL -> Gets a new SDP to be sent back in 200 OK ")
         sdp.origin = f"{sdp.origin.rsplit(' ', 1)[0]} {host_ip}"
         sdp.media[0].port = self.serversock.getsockname()[1]
         if sdp.host:
@@ -126,7 +122,7 @@ class Call():  # pylint: disable=too-many-instance-attributes
         return sdp
 
     def resume(self):
-        """ Resumes the call's audio """
+        logging.info("CALL -> Resumes the call's audio ")
         if not self.paused:
             return
         logging.info("resuming %s", self.b2b_key)
@@ -134,7 +130,7 @@ class Call():  # pylint: disable=too-many-instance-attributes
         self.sdp.media[0].direction = "sendrecv"
 
     def pause(self):
-        """ Pauses the call's audio """
+        logging.info("CALL -> Pauses the call's audio ")
         if self.paused:
             return
         logging.info("pausing %s", self.b2b_key)
@@ -142,8 +138,8 @@ class Call():  # pylint: disable=too-many-instance-attributes
 
         self.paused = True
 
-    def read_rtp(self):
-        """ Reads a RTP packet """
+    async def read_rtp(self):
+        logging.info("CALL -> Reads a RTP packet ")
 
         try:
             data, adr = self.serversock.recvfrom(4096)
@@ -171,7 +167,7 @@ class Call():  # pylint: disable=too-many-instance-attributes
             pass
 
     async def send_rtp(self):
-        """ Sends all RTP packet """
+        logging.info("CALL -> Sends all RTP packet ")
 
         sequence_number = random.randint(0, 10000)
         timestamp = random.randint(0, 10000)
@@ -188,7 +184,7 @@ class Call():  # pylint: disable=too-many-instance-attributes
                 payload = self.rtp.get_nowait()
             except Empty:
                 if self.terminated:
-                    self.terminate()
+                    await self.terminate()
                     return
                 if not self.paused:
                     payload = self.codec.get_silence()
@@ -222,7 +218,7 @@ class Call():  # pylint: disable=too-many-instance-attributes
                 await asyncio.sleep(float(drift))
 
     async def close(self):
-        """ Closes the call """
+        logging.info("CALL -> Closes the call ")
         logging.info("Call %s closing", self.b2b_key)
         loop = asyncio.get_running_loop()
         loop.remove_reader(self.serversock.fileno())
@@ -232,10 +228,18 @@ class Call():  # pylint: disable=too-many-instance-attributes
         self.stop_event.set()
         await self.ai.close()
 
-    def terminate(self):
-        """ Terminates the call """
+    async def terminate(self):
+        logging.info("CALL -> Terminates the call ")
         logging.info("Terminating call %s", self.b2b_key)
         self.mi_conn.execute("ua_session_terminate", {"key": self.b2b_key})
         asyncio.create_task(self.close())
+
+    async def start_ia(self):
+        await self.ai.start()
+
+        self.first_packet = True
+        loop = asyncio.get_running_loop()
+        loop.add_reader(self.serversock.fileno(), self.read_rtp)
+        logging.info("handling %s using %s AI", self.b2b_key, self.flavor)
 
 # vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4
