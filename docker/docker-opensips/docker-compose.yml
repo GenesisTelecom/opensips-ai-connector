@@ -1,0 +1,12 @@
+services:
+  opensips:
+    container_name: ai-voice-connector-opensips
+    build:
+      context: ../
+      dockerfile: ./Dockerfile
+      args:
+        OPENSIPS_VERSION: 3.5  # Ou qualquer outra versão/tag válida do GitHub
+    ports:
+      - "5060:5060"
+    volumes:
+      - ../cfg/:/usr/local/opensips/etc/opensips/
